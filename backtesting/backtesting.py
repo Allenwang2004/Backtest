@@ -1240,57 +1240,10 @@ class Backtest:
         self._strategy = strategy
         self._results: Optional[pd.Series] = None
         self._finalize_trades = bool(finalize_trades)
+        self._equity = None
+        self._trade = None
 
     def run(self, **kwargs) -> pd.Series:
-        """
-        Run the backtest. Returns `pd.Series` with results and statistics.
-
-        Keyword arguments are interpreted as strategy parameters.
-
-            >>> Backtest(GOOG, SmaCross).run()
-            Start                     2004-08-19 00:00:00
-            End                       2013-03-01 00:00:00
-            Duration                   3116 days 00:00:00
-            Exposure Time [%]                    96.74115
-            Equity Final [$]                     51422.99
-            Equity Peak [$]                      75787.44
-            Return [%]                           414.2299
-            Buy & Hold Return [%]               703.45824
-            Return (Ann.) [%]                    21.18026
-            Volatility (Ann.) [%]                36.49391
-            CAGR [%]                             14.15984
-            Sharpe Ratio                          0.58038
-            Sortino Ratio                         1.08479
-            Calmar Ratio                          0.44144
-            Alpha [%]                           394.37391
-            Beta                                  0.03803
-            Max. Drawdown [%]                   -47.98013
-            Avg. Drawdown [%]                    -5.92585
-            Max. Drawdown Duration      584 days 00:00:00
-            Avg. Drawdown Duration       41 days 00:00:00
-            # Trades                                   66
-            Win Rate [%]                          46.9697
-            Best Trade [%]                       53.59595
-            Worst Trade [%]                     -18.39887
-            Avg. Trade [%]                        2.53172
-            Max. Trade Duration         183 days 00:00:00
-            Avg. Trade Duration          46 days 00:00:00
-            Profit Factor                         2.16795
-            Expectancy [%]                        3.27481
-            SQN                                   1.07662
-            Kelly Criterion                       0.15187
-            _strategy                            SmaCross
-            _equity_curve                           Eq...
-            _trades                       Size  EntryB...
-            dtype: object
-
-        .. warning::
-            You may obtain different results for different strategy parameters.
-            E.g. if you use 50- and 200-bar SMA, the trading simulation will
-            begin on bar 201. The actual length of delay is equal to the lookback
-            period of the `Strategy.I` indicator which lags the most.
-            Obviously, this can affect results.
-        """
         data = _Data(self._data.copy(deep=False))
         broker: _Broker = self._broker(data=data)
         strategy: Strategy = self._strategy(broker, data, kwargs)
@@ -1340,6 +1293,8 @@ class Backtest:
             data._set_length(len(self._data))
 
             equity = pd.Series(broker._equity).bfill().fillna(broker._cash).values
+            self._equity = equity
+            self._trade = broker.closed_trades
             self._results = compute_stats(
                 trades=broker.closed_trades,
                 equity=equity,
@@ -1361,64 +1316,6 @@ class Backtest:
                  **kwargs) -> Union[pd.Series,
                                     Tuple[pd.Series, pd.Series],
                                     Tuple[pd.Series, pd.Series, dict]]:
-        """
-        Optimize strategy parameters to an optimal combination.
-        Returns result `pd.Series` of the best run.
-
-        `maximize` is a string key from the
-        `backtesting.backtesting.Backtest.run`-returned results series,
-        or a function that accepts this series object and returns a number;
-        the higher the better. By default, the method maximizes
-        Van Tharp's [System Quality Number](https://google.com/search?q=System+Quality+Number).
-
-        `method` is the optimization method. Currently two methods are supported:
-
-        * `"grid"` which does an exhaustive (or randomized) search over the
-          cartesian product of parameter combinations, and
-        * `"sambo"` which finds close-to-optimal strategy parameters using
-          [model-based optimization], making at most `max_tries` evaluations.
-
-        [model-based optimization]: https://sambo-optimization.github.io
-
-        `max_tries` is the maximal number of strategy runs to perform.
-        If `method="grid"`, this results in randomized grid search.
-        If `max_tries` is a floating value between (0, 1], this sets the
-        number of runs to approximately that fraction of full grid space.
-        Alternatively, if integer, it denotes the absolute maximum number
-        of evaluations. If unspecified (default), grid search is exhaustive,
-        whereas for `method="sambo"`, `max_tries` is set to 200.
-
-        `constraint` is a function that accepts a dict-like object of
-        parameters (with values) and returns `True` when the combination
-        is admissible to test with. By default, any parameters combination
-        is considered admissible.
-
-        If `return_heatmap` is `True`, besides returning the result
-        series, an additional `pd.Series` is returned with a multiindex
-        of all admissible parameter combinations, which can be further
-        inspected or projected onto 2D to plot a heatmap
-        (see `backtesting.lib.plot_heatmaps()`).
-
-        If `return_optimization` is True and `method = 'sambo'`,
-        in addition to result series (and maybe heatmap), return raw
-        [`scipy.optimize.OptimizeResult`][OptimizeResult] for further
-        inspection, e.g. with [SAMBO]'s [plotting tools].
-
-        [OptimizeResult]: https://sambo-optimization.github.io/doc/sambo/#sambo.OptimizeResult
-        [SAMBO]: https://sambo-optimization.github.io
-        [plotting tools]: https://sambo-optimization.github.io/doc/sambo/plot.html
-
-        If you want reproducible optimization results, set `random_state`
-        to a fixed integer random seed.
-
-        Additional keyword arguments represent strategy arguments with
-        list-like collections of possible values. For example, the following
-        code finds and returns the "best" of the 7 admissible (of the
-        9 possible) parameter combinations:
-
-            best_stats = backtest.optimize(sma1=[5, 10, 15], sma2=[10, 20, 40],
-                                           constraint=lambda p: p.sma1 < p.sma2)
-        """
         if not kwargs:
             raise ValueError('Need some strategy parameters to optimize')
 
@@ -1630,85 +1527,7 @@ class Backtest:
              superimpose: Union[bool, str] = True,
              resample=True, reverse_indicators=False,
              show_legend=True, open_browser=True):
-        """
-        Plot the progression of the last backtest run.
-
-        If `results` is provided, it should be a particular result
-        `pd.Series` such as returned by
-        `backtesting.backtesting.Backtest.run` or
-        `backtesting.backtesting.Backtest.optimize`, otherwise the last
-        run's results are used.
-
-        `filename` is the path to save the interactive HTML plot to.
-        By default, a strategy/parameter-dependent file is created in the
-        current working directory.
-
-        `plot_width` is the width of the plot in pixels. If None (default),
-        the plot is made to span 100% of browser width. The height is
-        currently non-adjustable.
-
-        If `plot_equity` is `True`, the resulting plot will contain
-        an equity (initial cash plus assets) graph section. This is the same
-        as `plot_return` plus initial 100%.
-
-        If `plot_return` is `True`, the resulting plot will contain
-        a cumulative return graph section. This is the same
-        as `plot_equity` minus initial 100%.
-
-        If `plot_pl` is `True`, the resulting plot will contain
-        a profit/loss (P/L) indicator section.
-
-        If `plot_volume` is `True`, the resulting plot will contain
-        a trade volume section.
-
-        If `plot_drawdown` is `True`, the resulting plot will contain
-        a separate drawdown graph section.
-
-        If `plot_trades` is `True`, the stretches between trade entries
-        and trade exits are marked by hash-marked tractor beams.
-
-        If `smooth_equity` is `True`, the equity graph will be
-        interpolated between fixed points at trade closing times,
-        unaffected by any interim asset volatility.
-
-        If `relative_equity` is `True`, scale and label equity graph axis
-        with return percent, not absolute cash-equivalent values.
-
-        If `superimpose` is `True`, superimpose larger-timeframe candlesticks
-        over the original candlestick chart. Default downsampling rule is:
-        monthly for daily data, daily for hourly data, hourly for minute data,
-        and minute for (sub-)second data.
-        `superimpose` can also be a valid [Pandas offset string],
-        such as `'5T'` or `'5min'`, in which case this frequency will be
-        used to superimpose.
-        Note, this only works for data with a datetime index.
-
-        If `resample` is `True`, the OHLC data is resampled in a way that
-        makes the upper number of candles for Bokeh to plot limited to 10_000.
-        This may, in situations of overabundant data,
-        improve plot's interactive performance and avoid browser's
-        `Javascript Error: Maximum call stack size exceeded` or similar.
-        Equity & dropdown curves and individual trades data is,
-        likewise, [reasonably _aggregated_][TRADES_AGG].
-        `resample` can also be a [Pandas offset string],
-        such as `'5T'` or `'5min'`, in which case this frequency will be
-        used to resample, overriding above numeric limitation.
-        Note, all this only works for data with a datetime index.
-
-        If `reverse_indicators` is `True`, the indicators below the OHLC chart
-        are plotted in reverse order of declaration.
-
-        [Pandas offset string]: \
-            https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#dateoffset-objects
-
-        [TRADES_AGG]: lib.html#backtesting.lib.TRADES_AGG
-
-        If `show_legend` is `True`, the resulting plot graphs will contain
-        labeled legends.
-
-        If `open_browser` is `True`, the resulting `filename` will be
-        opened in the default web browser.
-        """
+        
         if results is None:
             if self._results is None:
                 raise RuntimeError('First issue `backtest.run()` to obtain results.')
@@ -1733,6 +1552,138 @@ class Backtest:
             reverse_indicators=reverse_indicators,
             show_legend=show_legend,
             open_browser=open_browser)
+
+class MultiStrategy:
+    def __init__(self, data: pd.DataFrame, strategy_bucket: List[type], cash: float):
+        self.data = data
+        self.strategy_bucket = strategy_bucket
+        self.cash = cash
+        self.all_trades = None
+        self.all_equity = None
+        self.strategy_instances = []
+        self.strategy_outputs = []
+        self.all_trades_op = None
+        self.all_equity_op = None
+        self.optimize_outputs = []
+
+    def run(self, strategy_kwargs: Optional[List[dict]] = None):
+        for i, strategy in enumerate(self.strategy_bucket):
+            kwargs = strategy_kwargs[i] if strategy_kwargs else {}
+            bt = Backtest(
+                self.data,
+                strategy,
+                cash=self.cash / len(self.strategy_bucket),
+            )
+            result = bt.run(**kwargs)
+            if self.all_trades is None:
+                self.all_trades = bt._trade
+            else:
+                self.all_trades += bt._trade
+            if self.all_equity is None:
+                self.all_equity = bt._equity
+            else:
+                self.all_equity += bt._equity
+
+            self.strategy_instances.append(bt)
+            self.strategy_outputs.append(result)
+
+        result = compute_stats(
+            trades=self.all_trades,
+            equity=self.all_equity,
+            ohlc_data=self.data,
+            risk_free_rate=0.0,
+            strategy_instance=None,
+        )
+
+        print('---------------------------------------------')
+        print('MultiStrategy Results:')
+        print('---------------------------------------------')
+        for i, strategy in enumerate(self.strategy_bucket):
+            print(self.strategy_outputs[i])
+            print('---------------------------------------------')
+        print(result)
+        return result
+
+    def plot(self, *, results: pd.Series = None, filename=None, plot_width=None,
+            plot_equity=True, plot_return=False, plot_pl=True,
+            plot_volume=True, plot_drawdown=False, plot_trades=True,
+            smooth_equity=False, relative_equity=True,
+            superimpose: Union[bool, str] = True,
+            resample=True, reverse_indicators=False,
+            show_legend=True, open_browser=True):
+    
+        if self.strategy_outputs is None:
+            raise RuntimeError('First issue `backtest.run()` to obtain results.')
+        else:
+            for output in self.strategy_outputs:
+                results = output
+                plot(
+                    results=results,
+                    df=self.data,
+                    indicators=results._strategy._indicators,
+                    filename=filename,
+                    plot_width=plot_width,
+                    plot_equity=plot_equity,
+                    plot_return=plot_return,
+                    plot_pl=plot_pl,
+                    plot_volume=plot_volume,
+                    plot_drawdown=plot_drawdown,
+                    plot_trades=plot_trades,
+                    smooth_equity=smooth_equity,
+                    relative_equity=relative_equity,
+                    superimpose=superimpose,
+                    resample=resample,
+                    reverse_indicators=reverse_indicators,
+                    show_legend=show_legend,
+                    open_browser=open_browser)
+                
+                
+    def optimize(self, *strategy_opts):
+        for i, (strategy, opts) in enumerate(zip(self.strategy_bucket, strategy_opts)):
+            bt = Backtest(self.data, strategy, cash=self.cash)
+            
+            opt_kwargs = dict(opts)  # 複製參數
+
+            strategy_kwargs = {
+                k: opt_kwargs.pop(k) for k in
+                opt_kwargs.keys() & {
+                    'maximize', 'method', 'max_tries', 'constraint',
+                    'return_heatmap', 'return_optimization', 'random_state'
+                }
+            }
+
+            strategy_params = {k: v for k, v in opt_kwargs.items()} 
+        
+            stats = bt.optimize(**strategy_params, **strategy_kwargs)
+            self.optimize_outputs.append(stats)
+
+        #     if self.all_trades_op is None:
+        #             self.all_trades_op = bt._trade
+        #     else:
+        #         self.all_trades_op += bt._trade
+
+        #     if self.all_equity_op is None:
+        #         self.all_equity = bt._equity
+        #     else:
+        #         self.all_equity_op += bt._equity
+
+        # result = compute_stats(
+        #     trades=self.all_trades_op,
+        #     equity=self.all_equity_op,
+        #     ohlc_data=self.data,
+        #     risk_free_rate=0.0,
+        #     strategy_instance=None,
+        # )
+
+        print('---------------------------------------------')
+        print('MultiStrategy Optimize Results:')
+        print('---------------------------------------------')
+        for output in self.optimize_outputs:    
+            print(output)
+            print('---------------------------------------------')
+        #print(result)
+
+        return output
 
 
 # NOTE: Don't put anything public below this __all__ list
